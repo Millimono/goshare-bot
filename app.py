@@ -4,6 +4,7 @@ import os
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
+from rapidfuzz import fuzz
 
 app = Flask(__name__)
 
@@ -45,13 +46,23 @@ def ajouter_chauffeur(numero, trajet, heure, lieu):
             return
     chauffeurs_sheet.append_row([numero, trajet, heure, lieu, "oui"])
 
-def trouver_chauffeur():
+def trouver_chauffeurs(trajet_passager):
     chauffeurs_sheet, _ = get_sheets()
     records = chauffeurs_sheet.get_all_records()
+    resultats = []
+
     for i, row in enumerate(records):
         if str(row["disponible"]).lower() == "oui":
-            return i+2, row
-    return None, None
+            score = fuzz.ratio(
+                trajet_passager.lower(),
+                str(row["trajet"]).lower()
+            )
+            if score >= 50:
+                resultats.append((i+2, row, score))
+
+    # Trier par score décroissant
+    resultats.sort(key=lambda x: x[2], reverse=True)
+    return resultats
 
 def marquer_indisponible(row_index):
     chauffeurs_sheet, _ = get_sheets()
@@ -76,18 +87,15 @@ def webhook():
     data = request.json
     try:
         entry = data["entry"][0]["changes"][0]["value"]
-        
-        # Ignorer les notifications de statut
+
         if "statuses" in entry:
             return "OK", 200
-            
-        # Vérifier qu'il y a bien un message
+
         if "messages" not in entry:
             return "OK", 200
 
         message = entry["messages"][0]
-        
-        # Ignorer si ce n'est pas un message texte
+
         if message.get("type") != "text":
             return "OK", 200
 
@@ -121,7 +129,7 @@ def webhook():
                 send_message(numero,
                     "✅ Bienvenue passager !\n\n"
                     "📍 Quel est votre trajet ?\n"
-                    "Utilisez le tiret : *ratoma - kipé*"
+                    "Exemple : *ratoma - kipé*"
                 )
             else:
                 send_message(numero, "❌ Tapez *chauffeur* ou *passager* uniquement.")
@@ -160,33 +168,61 @@ def webhook():
 
         elif etat == "passager_trajet":
             trajet = text
-            row_index, chauffeur = trouver_chauffeur()
+            resultats = trouver_chauffeurs(trajet)
 
-            if chauffeur:
-                marquer_indisponible(row_index)
-                enregistrer_course(numero, chauffeur["numero"], trajet)
-                send_message(numero,
-                    f"✅ *Chauffeur trouvé !*\n\n"
-                    f"📍 Trajet : *{chauffeur['trajet']}*\n"
-                    f"⏰ Départ : *{chauffeur['heure']}*\n"
-                    f"📌 Lieu de rendez-vous : *{chauffeur['lieu']}*\n\n"
-                    f"💰 Paiement : Orange Money ou cash.\n"
-                    f"Bonne route ! 🚗"
-                )
-                send_message(str(chauffeur["numero"]),
-                    f"🎉 *Nouveau passager !*\n\n"
-                    f"📍 Trajet : *{trajet}*\n"
-                    f"👤 Contact : +{numero}\n\n"
-                    f"Bonne route ! 🚗"
-                )
-                sessions[numero] = "debut"
+            if resultats:
+                # Construire message avec tous les chauffeurs
+                msg = f"🚗 *{len(resultats)} chauffeur(s) disponible(s) pour votre trajet :*\n\n"
+                for idx, (row_index, chauffeur, score) in enumerate(resultats):
+                    msg += (
+                        f"{idx+1}️⃣ *{chauffeur['trajet']}*\n"
+                        f"⏰ {chauffeur['heure']} — 📌 {chauffeur['lieu']}\n\n"
+                    )
+                msg += "Tapez le *numéro* de votre choix."
+
+                send_message(numero, msg)
+                sessions[numero] = "passager_choix"
+                sessions[numero + "_resultats"] = resultats
+                sessions[numero + "_trajet"] = trajet
+
             else:
                 send_message(numero,
-                    f"⏳ Pas de chauffeur disponible pour *{trajet}*.\n\n"
+                    f"⏳ Aucun chauffeur disponible pour *{trajet}*.\n\n"
                     "Réessayez dans quelques minutes.\n"
                     "Tapez *menu* pour recommencer."
                 )
                 sessions[numero] = "debut"
+
+        elif etat == "passager_choix":
+            resultats = sessions.get(numero + "_resultats", [])
+            trajet = sessions.get(numero + "_trajet", "")
+
+            try:
+                choix = int(text) - 1
+                if 0 <= choix < len(resultats):
+                    row_index, chauffeur, _ = resultats[choix]
+                    marquer_indisponible(row_index)
+                    enregistrer_course(numero, chauffeur["numero"], trajet)
+
+                    send_message(numero,
+                        f"✅ *Course confirmée !*\n\n"
+                        f"📍 Trajet : *{chauffeur['trajet']}*\n"
+                        f"⏰ Départ : *{chauffeur['heure']}*\n"
+                        f"📌 Lieu de rendez-vous : *{chauffeur['lieu']}*\n\n"
+                        f"💰 Paiement : Orange Money ou cash.\n"
+                        f"Bonne route ! 🚗"
+                    )
+                    send_message(str(chauffeur["numero"]),
+                        f"🎉 *Nouveau passager !*\n\n"
+                        f"📍 Trajet : *{trajet}*\n"
+                        f"👤 Contact : +{numero}\n\n"
+                        f"Bonne route ! 🚗"
+                    )
+                    sessions[numero] = "debut"
+                else:
+                    send_message(numero, "❌ Numéro invalide. Tapez le numéro de votre choix.")
+            except:
+                send_message(numero, "❌ Tapez juste le numéro de votre choix. Ex : *1*")
 
     except Exception as e:
         print(f"Erreur: {e}")
