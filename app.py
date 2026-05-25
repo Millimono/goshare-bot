@@ -39,6 +39,10 @@ def send_message(to, message):
     r = requests.post(url, headers=headers, json=data)
     print(f"Send: {r.status_code}")
 
+def nettoyer_nombre(text):
+    # Enlever tous les espaces, espaces insécables, virgules
+    return text.strip().replace(" ", "").replace("\u202f", "").replace(",", "").replace(".", "").replace("fg", "").replace("gnf", "").replace("gf", "")
+
 def generer_code():
     return "GS-" + "".join(random.choices(string.digits, k=4))
 
@@ -87,8 +91,6 @@ def incrementer_courses(row_index, prix):
     row = records[row_index - 2]
     count = int(row.get("courses_count", 0)) + 1
     chauffeurs_sheet.update_cell(row_index, 8, count)
-
-    # Message à la 10ème course
     if count == 10:
         commission = round(int(prix) * 0.03)
         send_message(str(row["numero"]),
@@ -119,24 +121,18 @@ def valider_code(code, chauffeur_numero):
     chauffeurs_sheet, _ = get_sheets()
     records = courses_sheet.get_all_records()
     chauffeur_records = chauffeurs_sheet.get_all_records()
-
     for i, row in enumerate(records):
         if str(row["code"]) == code.upper() and str(row["chauffeur"]) == str(chauffeur_numero) and str(row["validee"]) == "non":
             courses_sheet.update_cell(i+2, 7, "oui")
             courses_sheet.update_cell(i+2, 5, "confirmee")
-
-            # Trouver row_index du chauffeur
             row_index = int(row.get("row_index", 0))
             prix = 0
             for c in chauffeur_records:
                 if str(c["numero"]) == str(chauffeur_numero):
                     prix = c.get("prix", 0)
                     break
-
-            # Incrémenter le compteur de courses
             if row_index > 0:
                 incrementer_courses(row_index, prix)
-
             return True, row
     return False, None
 
@@ -173,7 +169,8 @@ def webhook():
             return "OK", 200
 
         numero = message["from"]
-        text = message["text"]["body"].strip().lower()
+        text_original = message["text"]["body"].strip()
+        text = text_original.lower().strip()
         etat = sessions.get(numero, "debut")
 
         if text == "menu":
@@ -236,7 +233,7 @@ def webhook():
 
         elif etat == "chauffeur_places":
             try:
-                places = int(text)
+                places = int(nettoyer_nombre(text))
                 sessions[numero + "_places"] = places
                 sessions[numero] = "chauffeur_prix"
                 send_message(numero,
@@ -249,7 +246,7 @@ def webhook():
 
         elif etat == "chauffeur_prix":
             try:
-                prix = int(text)
+                prix = int(nettoyer_nombre(text))
                 trajet = sessions.get(numero + "_trajet", "")
                 heure = sessions.get(numero + "_heure", "")
                 lieu = sessions.get(numero + "_lieu", "")
@@ -270,7 +267,7 @@ def webhook():
                     "▪️ *menu* pour modifier"
                 )
             except:
-                send_message(numero, "❌ Tapez un montant. Exemple : *15000*")
+                send_message(numero, "❌ Tapez un montant en chiffres uniquement. Exemple : *15000*")
 
         elif etat == "chauffeur_pret":
             if text.startswith("valider "):
@@ -289,7 +286,6 @@ def webhook():
                     )
                 else:
                     send_message(numero, "❌ Code invalide ou déjà validé.")
-
             elif text == "liberer":
                 remettre_place_si_non_validee(numero)
                 send_message(numero,
@@ -332,7 +328,7 @@ def webhook():
             resultats = sessions.get(numero + "_resultats", [])
             trajet = sessions.get(numero + "_trajet", "")
             try:
-                choix = int(text) - 1
+                choix = int(nettoyer_nombre(text)) - 1
                 if 0 <= choix < len(resultats):
                     row_index, chauffeur, _ = resultats[choix]
                     code = generer_code()
