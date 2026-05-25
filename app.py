@@ -1,12 +1,28 @@
 from flask import Flask, request
 import requests
 import os
+import json
+import gspread
+from google.oauth2.service_account import Credentials
+from datetime import datetime
 
 app = Flask(__name__)
 
 TOKEN = os.environ.get("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID")
+SHEET_ID = os.environ.get("GOOGLE_SHEET_ID")
 VERIFY_TOKEN = "goshare123"
+
+# Connexion Google Sheets
+def get_sheets():
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+    creds = Credentials.from_service_account_file("/etc/secrets/credentials.json", scopes=scopes)
+    client = gspread.authorize(creds)
+    sheet = client.open_by_key(SHEET_ID)
+    return sheet.worksheet("Chauffeurs"), sheet.worksheet("Courses")
+
+# Stockage sessions en mémoire
+sessions = {}
 
 def send_message(to, message):
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
@@ -22,6 +38,33 @@ def send_message(to, message):
     }
     requests.post(url, headers=headers, json=data)
 
+def ajouter_chauffeur(numero, trajet, heure, lieu):
+    chauffeurs_sheet, _ = get_sheets()
+    # Vérifier si déjà existant
+    records = chauffeurs_sheet.get_all_records()
+    for i, row in enumerate(records):
+        if str(row["numero"]) == str(numero):
+            chauffeurs_sheet.update(f"A{i+2}:E{i+2}", [[numero, trajet, heure, lieu, "oui"]])
+            return
+    chauffeurs_sheet.append_row([numero, trajet, heure, lieu, "oui"])
+
+def trouver_chauffeur():
+    chauffeurs_sheet, _ = get_sheets()
+    records = chauffeurs_sheet.get_all_records()
+    for i, row in enumerate(records):
+        if str(row["disponible"]).lower() == "oui":
+            return i+2, row
+    return None, None
+
+def marquer_indisponible(row_index):
+    chauffeurs_sheet, _ = get_sheets()
+    chauffeurs_sheet.update_cell(row_index, 5, "non")
+
+def enregistrer_course(passager, chauffeur, trajet):
+    _, courses_sheet = get_sheets()
+    date = datetime.now().strftime("%Y-%m-%d %H:%M")
+    courses_sheet.append_row([date, passager, chauffeur, trajet, "confirmée"])
+
 @app.route("/webhook", methods=["GET"])
 def verify():
     mode = request.args.get("hub.mode")
@@ -36,25 +79,103 @@ def webhook():
     data = request.json
     try:
         message = data["entry"][0]["changes"][0]["value"]["messages"][0]
-        from_number = message["from"]
-        text = message["text"]["body"].strip()
+        numero = message["from"]
+        text = message["text"]["body"].strip().lower()
+        etat = sessions.get(numero, "debut")
 
-        reponse = (
-            f"🚗 Bonjour ! Bienvenue sur GoShare Conakry.\n\n"
-            f"Envoyez votre trajet dans ce format :\n"
-            f"*Départ → Destination*\n\n"
-            f"Exemple : Ratoma → Kipé"
-        )
+        if text == "menu":
+            sessions[numero] = "debut"
+            etat = "debut"
 
-        if "→" in text or "->" in text:
-            reponse = (
-                f"✅ Course reçue !\n\n"
-                f"📍 Trajet : {text}\n"
-                f"⏳ Un chauffeur vous confirme dans 2 minutes.\n\n"
-                f"💰 Paiement : Orange Money ou cash."
+        if etat == "debut":
+            send_message(numero,
+                "🚗 *Bienvenue sur GoShare Conakry !*\n\n"
+                "Vous êtes :\n"
+                "1️⃣ Tapez *chauffeur*\n"
+                "2️⃣ Tapez *passager*"
+            )
+            sessions[numero] = "attente_role"
+
+        elif etat == "attente_role":
+            if text == "chauffeur":
+                sessions[numero] = "chauffeur_trajet"
+                send_message(numero,
+                    "✅ Bienvenue chauffeur !\n\n"
+                    "📍 Quel est votre trajet ?\n"
+                    "Exemple : *ratoma → kipé*"
+                )
+            elif text == "passager":
+                sessions[numero] = "passager_trajet"
+                send_message(numero,
+                    "✅ Bienvenue passager !\n\n"
+                    "📍 Quel est votre trajet ?\n"
+                    "Utilisez le tiret : *ratoma - kipé*"
+                )
+            else:
+                send_message(numero, "❌ Tapez *chauffeur* ou *passager* uniquement.")
+
+        elif etat == "chauffeur_trajet":
+            sessions[numero + "_trajet"] = text
+            sessions[numero] = "chauffeur_heure"
+            send_message(numero,
+                f"📍 Trajet : *{text}*\n\n"
+                "⏰ Heure de départ ?\n"
+                "Exemple : *08h30*"
             )
 
-        send_message(from_number, reponse)
+        elif etat == "chauffeur_heure":
+            sessions[numero + "_heure"] = text
+            sessions[numero] = "chauffeur_lieu"
+            send_message(numero,
+                f"⏰ Heure : *{text}*\n\n"
+                "📌 Lieu de départ précis ?\n"
+                "Exemple : *rond point bambeto*"
+            )
+
+        elif etat == "chauffeur_lieu":
+            trajet = sessions.get(numero + "_trajet", "")
+            heure = sessions.get(numero + "_heure", "")
+            ajouter_chauffeur(numero, trajet, heure, text)
+            sessions[numero] = "chauffeur_pret"
+            send_message(numero,
+                f"✅ *Vous êtes enregistré !*\n\n"
+                f"📍 Trajet : *{trajet}*\n"
+                f"⏰ Départ : *{heure}*\n"
+                f"📌 Lieu : *{text}*\n\n"
+                "En attente de passagers... 🚗\n"
+                "Tapez *menu* pour modifier."
+            )
+
+        elif etat == "passager_trajet":
+            trajet = text
+            row_index, chauffeur = trouver_chauffeur()
+
+            if chauffeur:
+                marquer_indisponible(row_index)
+                enregistrer_course(numero, chauffeur["numero"], trajet)
+                send_message(numero,
+                    f"✅ *Chauffeur trouvé !*\n\n"
+                    f"📍 Trajet chauffeur : *{chauffeur['trajet']}*\n"
+                    f"⏰ Départ : *{chauffeur['heure']}*\n"
+                    f"📌 Lieu de rendez-vous : *{chauffeur['lieu']}*\n\n"
+                    f"💰 Paiement : Orange Money ou cash.\n"
+                    f"Bonne route ! 🚗"
+                )
+                send_message(str(chauffeur["numero"]),
+                    f"🎉 *Nouveau passager !*\n\n"
+                    f"📍 Trajet demandé : *{trajet}*\n"
+                    f"👤 Contact : +{numero}\n\n"
+                    f"Bonne route ! 🚗"
+                )
+                sessions[numero] = "debut"
+            else:
+                send_message(numero,
+                    f"⏳ Pas de chauffeur disponible pour *{trajet}*.\n\n"
+                    "Réessayez dans quelques minutes.\n"
+                    "Tapez *menu* pour recommencer."
+                )
+                sessions[numero] = "debut"
+
     except Exception as e:
         print(f"Erreur: {e}")
 
