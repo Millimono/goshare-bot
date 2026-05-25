@@ -16,6 +16,10 @@ PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID")
 SHEET_ID = os.environ.get("GOOGLE_SHEET_ID")
 VERIFY_TOKEN = "goshare123"
 
+HEADERS_CHAUFFEURS = ['numero','trajet','heure','lieu','disponible','places','prix','courses_count']
+HEADERS_COURSES = ['date','passager','chauffeur','trajet','statut','code','validee','row_index','commission']
+HEADERS_SESSIONS = ['numero','etat','trajet','heure','lieu','places','prix']
+
 def get_sheets():
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
     creds = Credentials.from_service_account_file("/etc/secrets/credentials.json", scopes=scopes)
@@ -43,7 +47,7 @@ def generer_code():
     return "GS-" + "".join(random.choices(string.digits, k=4))
 
 def lire_session(sessions_sheet, numero):
-    records = sessions_sheet.get_all_records()
+    records = sessions_sheet.get_all_records(expected_headers=HEADERS_SESSIONS)
     for row in records:
         if str(row["numero"]) == str(numero):
             return {
@@ -57,7 +61,7 @@ def lire_session(sessions_sheet, numero):
     return {"etat": "debut", "trajet": "", "heure": "", "lieu": "", "places": "", "prix": ""}
 
 def sauvegarder_session(sessions_sheet, numero, etat, trajet="", heure="", lieu="", places="", prix=""):
-    records = sessions_sheet.get_all_records()
+    records = sessions_sheet.get_all_records(expected_headers=HEADERS_SESSIONS)
     data = [str(numero), str(etat), str(trajet), str(heure), str(lieu), str(places), str(prix)]
     for i, row in enumerate(records):
         if str(row["numero"]) == str(numero):
@@ -66,7 +70,7 @@ def sauvegarder_session(sessions_sheet, numero, etat, trajet="", heure="", lieu=
     sessions_sheet.append_row(data)
 
 def ajouter_chauffeur(chauffeurs_sheet, numero, trajet, heure, lieu, places, prix):
-    records = chauffeurs_sheet.get_all_records()
+    records = chauffeurs_sheet.get_all_records(expected_headers=HEADERS_CHAUFFEURS)
     for i, row in enumerate(records):
         if str(row["numero"]) == str(numero):
             count = to_int(row.get("courses_count", 0))
@@ -75,7 +79,7 @@ def ajouter_chauffeur(chauffeurs_sheet, numero, trajet, heure, lieu, places, pri
     chauffeurs_sheet.append_row([str(numero), str(trajet), str(heure), str(lieu), "oui", str(places), str(prix), 0])
 
 def trouver_chauffeurs(chauffeurs_sheet, trajet_passager):
-    records = chauffeurs_sheet.get_all_records()
+    records = chauffeurs_sheet.get_all_records(expected_headers=HEADERS_CHAUFFEURS)
     resultats = []
     for i, row in enumerate(records):
         if str(row["disponible"]).lower() == "oui" and to_int(row.get("places", 0)) > 0:
@@ -86,7 +90,7 @@ def trouver_chauffeurs(chauffeurs_sheet, trajet_passager):
     return resultats
 
 def decrementer_place(chauffeurs_sheet, row_index):
-    records = chauffeurs_sheet.get_all_records()
+    records = chauffeurs_sheet.get_all_records(expected_headers=HEADERS_CHAUFFEURS)
     row = records[row_index - 2]
     places = to_int(row.get("places", 0)) - 1
     chauffeurs_sheet.update_cell(row_index, 6, places)
@@ -94,14 +98,14 @@ def decrementer_place(chauffeurs_sheet, row_index):
         chauffeurs_sheet.update_cell(row_index, 5, "non")
 
 def incrementer_place(chauffeurs_sheet, row_index):
-    records = chauffeurs_sheet.get_all_records()
+    records = chauffeurs_sheet.get_all_records(expected_headers=HEADERS_CHAUFFEURS)
     row = records[row_index - 2]
     places = to_int(row.get("places", 0)) + 1
     chauffeurs_sheet.update_cell(row_index, 6, places)
     chauffeurs_sheet.update_cell(row_index, 5, "oui")
 
 def incrementer_courses(chauffeurs_sheet, row_index, prix):
-    records = chauffeurs_sheet.get_all_records()
+    records = chauffeurs_sheet.get_all_records(expected_headers=HEADERS_CHAUFFEURS)
     row = records[row_index - 2]
     count = to_int(row.get("courses_count", 0)) + 1
     chauffeurs_sheet.update_cell(row_index, 8, count)
@@ -126,8 +130,8 @@ def enregistrer_course(courses_sheet, passager, chauffeur_numero, trajet, code, 
     courses_sheet.append_row([date, str(passager), str(chauffeur_numero), str(trajet), "reservee", str(code), "non", to_int(row_index), commission])
 
 def valider_code(courses_sheet, chauffeurs_sheet, code, chauffeur_numero):
-    records = courses_sheet.get_all_records()
-    chauffeur_records = chauffeurs_sheet.get_all_records()
+    records = courses_sheet.get_all_records(expected_headers=HEADERS_COURSES)
+    chauffeur_records = chauffeurs_sheet.get_all_records(expected_headers=HEADERS_CHAUFFEURS)
     for i, row in enumerate(records):
         if str(row["code"]) == code.upper() and str(row["chauffeur"]) == str(chauffeur_numero) and str(row["validee"]) == "non":
             courses_sheet.update_cell(i+2, 7, "oui")
@@ -144,7 +148,7 @@ def valider_code(courses_sheet, chauffeurs_sheet, code, chauffeur_numero):
     return False, None
 
 def remettre_place_si_non_validee(courses_sheet, chauffeurs_sheet, chauffeur_numero):
-    records = courses_sheet.get_all_records()
+    records = courses_sheet.get_all_records(expected_headers=HEADERS_COURSES)
     for i, row in enumerate(records):
         if str(row["chauffeur"]) == str(chauffeur_numero) and str(row["validee"]) == "non" and str(row["statut"]) == "reservee":
             row_index = to_int(row.get("row_index", 0))
@@ -188,7 +192,6 @@ def webhook():
 
         print(f"SESSION: etat={etat}")
 
-        # Commandes globales — disponibles depuis n'importe quel état
         if text == "menu":
             sauvegarder_session(sessions_sheet, numero, "attente_role")
             send_message(numero,
