@@ -122,8 +122,7 @@ def incrementer_courses(chauffeurs_sheet, row_index, prix):
 
 def enregistrer_course(courses_sheet, passager, chauffeur_numero, trajet, code, row_index, prix):
     date = datetime.now().strftime("%Y-%m-%d %H:%M")
-    prix_int = to_int(prix)
-    commission = round(prix_int * 0.03)
+    commission = round(to_int(prix) * 0.03)
     courses_sheet.append_row([date, str(passager), str(chauffeur_numero), str(trajet), "reservee", str(code), "non", to_int(row_index), commission])
 
 def valider_code(courses_sheet, chauffeurs_sheet, code, chauffeur_numero):
@@ -187,8 +186,9 @@ def webhook():
         lieu_sess = sess["lieu"]
         places_sess = sess["places"]
 
-        print(f"SESSION: etat={etat} trajet={trajet_sess} heure={heure_sess} lieu={lieu_sess} places={places_sess}")
+        print(f"SESSION: etat={etat}")
 
+        # Commandes globales — disponibles depuis n'importe quel état
         if text == "menu":
             sauvegarder_session(sessions_sheet, numero, "attente_role")
             send_message(numero,
@@ -197,6 +197,27 @@ def webhook():
                 "1️⃣ Tapez *chauffeur*\n"
                 "2️⃣ Tapez *passager*"
             )
+
+        elif text.startswith("valider "):
+            code = text.replace("valider ", "").strip().upper()
+            ok, course = valider_code(courses_sheet, chauffeurs_sheet, code, numero)
+            if ok:
+                send_message(numero,
+                    f"✅ Code *{code}* validé !\n"
+                    f"👤 Passager : +{course['passager']}\n"
+                    f"📍 Trajet : {course['trajet']}"
+                )
+                send_message(str(course["passager"]),
+                    f"✅ *Votre place est confirmée !*\n\n"
+                    f"📍 Trajet : {course['trajet']}\n"
+                    f"Bonne route ! 🚗"
+                )
+            else:
+                send_message(numero, "❌ Code invalide ou déjà validé.")
+
+        elif text == "liberer":
+            remettre_place_si_non_validee(courses_sheet, chauffeurs_sheet, numero)
+            send_message(numero, "✅ Places remises en disponibilité.\nTapez *menu* pour modifier.")
 
         elif etat in ["debut", "attente_role"] and text == "chauffeur":
             sauvegarder_session(sessions_sheet, numero, "chauffeur_trajet")
@@ -280,34 +301,6 @@ def webhook():
                 )
             else:
                 send_message(numero, "❌ Une information manque. Tapez *menu* pour recommencer.")
-
-        elif etat == "chauffeur_pret":
-            if text.startswith("valider "):
-                code = text.replace("valider ", "").strip().upper()
-                ok, course = valider_code(courses_sheet, chauffeurs_sheet, code, numero)
-                if ok:
-                    send_message(numero,
-                        f"✅ Code *{code}* validé !\n"
-                        f"👤 Passager : +{course['passager']}\n"
-                        f"📍 Trajet : {course['trajet']}"
-                    )
-                    send_message(str(course["passager"]),
-                        f"✅ *Votre place est confirmée !*\n\n"
-                        f"📍 Trajet : {course['trajet']}\n"
-                        f"Bonne route ! 🚗"
-                    )
-                else:
-                    send_message(numero, "❌ Code invalide ou déjà validé.")
-            elif text == "liberer":
-                remettre_place_si_non_validee(courses_sheet, chauffeurs_sheet, numero)
-                send_message(numero, "✅ Places remises en disponibilité.\nTapez *menu* pour modifier.")
-            else:
-                send_message(numero,
-                    "Commandes :\n"
-                    "▪️ *valider GS-XXXX* pour valider un code\n"
-                    "▪️ *liberer* pour remettre les places\n"
-                    "▪️ *menu* pour modifier"
-                )
 
         elif etat == "passager_trajet":
             resultats = trouver_chauffeurs(chauffeurs_sheet, text)
