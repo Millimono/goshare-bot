@@ -1,7 +1,6 @@
 from flask import Flask, request
 import requests
 import os
-import json
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
@@ -13,16 +12,14 @@ PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID")
 SHEET_ID = os.environ.get("GOOGLE_SHEET_ID")
 VERIFY_TOKEN = "goshare123"
 
-# Connexion Google Sheets
+sessions = {}
+
 def get_sheets():
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
     creds = Credentials.from_service_account_file("/etc/secrets/credentials.json", scopes=scopes)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SHEET_ID)
     return sheet.worksheet("Chauffeurs"), sheet.worksheet("Courses")
-
-# Stockage sessions en mémoire
-sessions = {}
 
 def send_message(to, message):
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
@@ -36,11 +33,11 @@ def send_message(to, message):
         "type": "text",
         "text": {"body": message}
     }
-    requests.post(url, headers=headers, json=data)
+    r = requests.post(url, headers=headers, json=data)
+    print(f"Send message response: {r.status_code} {r.text}")
 
 def ajouter_chauffeur(numero, trajet, heure, lieu):
     chauffeurs_sheet, _ = get_sheets()
-    # Vérifier si déjà existant
     records = chauffeurs_sheet.get_all_records()
     for i, row in enumerate(records):
         if str(row["numero"]) == str(numero):
@@ -78,7 +75,22 @@ def verify():
 def webhook():
     data = request.json
     try:
-        message = data["entry"][0]["changes"][0]["value"]["messages"][0]
+        entry = data["entry"][0]["changes"][0]["value"]
+        
+        # Ignorer les notifications de statut
+        if "statuses" in entry:
+            return "OK", 200
+            
+        # Vérifier qu'il y a bien un message
+        if "messages" not in entry:
+            return "OK", 200
+
+        message = entry["messages"][0]
+        
+        # Ignorer si ce n'est pas un message texte
+        if message.get("type") != "text":
+            return "OK", 200
+
         numero = message["from"]
         text = message["text"]["body"].strip().lower()
         etat = sessions.get(numero, "debut")
@@ -155,7 +167,7 @@ def webhook():
                 enregistrer_course(numero, chauffeur["numero"], trajet)
                 send_message(numero,
                     f"✅ *Chauffeur trouvé !*\n\n"
-                    f"📍 Trajet chauffeur : *{chauffeur['trajet']}*\n"
+                    f"📍 Trajet : *{chauffeur['trajet']}*\n"
                     f"⏰ Départ : *{chauffeur['heure']}*\n"
                     f"📌 Lieu de rendez-vous : *{chauffeur['lieu']}*\n\n"
                     f"💰 Paiement : Orange Money ou cash.\n"
@@ -163,7 +175,7 @@ def webhook():
                 )
                 send_message(str(chauffeur["numero"]),
                     f"🎉 *Nouveau passager !*\n\n"
-                    f"📍 Trajet demandé : *{trajet}*\n"
+                    f"📍 Trajet : *{trajet}*\n"
                     f"👤 Contact : +{numero}\n\n"
                     f"Bonne route ! 🚗"
                 )
