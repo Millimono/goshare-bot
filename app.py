@@ -17,8 +17,8 @@ SHEET_ID = os.environ.get("GOOGLE_SHEET_ID")
 VERIFY_TOKEN = "goshare123"
 
 HEADERS_CHAUFFEURS = ['numero','trajet','heure','lieu','disponible','places','prix','courses_count','trajet_id','trajets_comptes','annulations']
-HEADERS_COURSES = ['date','passager','chauffeur','trajet','statut','code','validee','row_index','commission','trajet_id']
-HEADERS_SESSIONS = ['numero','etat','trajet','heure','lieu','places','prix']
+HEADERS_COURSES = ['date','passager','chauffeur','trajet','statut','code','validee','row_index','commission','trajet_id','raison_annulation']
+HEADERS_SESSIONS = ['numero','etat','trajet','heure','lieu','places','prix','annulation_en_cours']
 
 def get_sheets():
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -59,16 +59,17 @@ def lire_session(sessions_sheet, numero):
                 "heure": str(row.get("heure", "")),
                 "lieu": str(row.get("lieu", "")),
                 "places": str(row.get("places", "")),
-                "prix": str(row.get("prix", ""))
+                "prix": str(row.get("prix", "")),
+                "annulation_en_cours": str(row.get("annulation_en_cours", ""))
             }
-    return {"etat": "debut", "trajet": "", "heure": "", "lieu": "", "places": "", "prix": ""}
+    return {"etat": "debut", "trajet": "", "heure": "", "lieu": "", "places": "", "prix": "", "annulation_en_cours": ""}
 
-def sauvegarder_session(sessions_sheet, numero, etat, trajet="", heure="", lieu="", places="", prix=""):
+def sauvegarder_session(sessions_sheet, numero, etat, trajet="", heure="", lieu="", places="", prix="", annulation_en_cours=""):
     records = sessions_sheet.get_all_records(expected_headers=HEADERS_SESSIONS)
-    data = [str(numero), str(etat), str(trajet), str(heure), str(lieu), str(places), str(prix)]
+    data = [str(numero), str(etat), str(trajet), str(heure), str(lieu), str(places), str(prix), str(annulation_en_cours)]
     for i, row in enumerate(records):
         if str(row["numero"]) == str(numero):
-            sessions_sheet.update(f"A{i+2}:G{i+2}", [data])
+            sessions_sheet.update(f"A{i+2}:H{i+2}", [data])
             return
     sessions_sheet.append_row(data)
 
@@ -115,18 +116,13 @@ def incrementer_courses(chauffeurs_sheet, row_index, prix, trajet_id):
     records = chauffeurs_sheet.get_all_records(expected_headers=HEADERS_CHAUFFEURS)
     row = records[row_index - 2]
     trajets_comptes = str(row.get("trajets_comptes", ""))
-    
-    # Vérifier si ce trajet a déjà été compté
     if trajet_id in trajets_comptes.split(","):
         print(f"Trajet {trajet_id} déjà compté")
         return
-    
-    # Incrémenter le compteur
     count = to_int(row.get("courses_count", 0)) + 1
     trajets_comptes = trajets_comptes + "," + trajet_id if trajets_comptes else trajet_id
     chauffeurs_sheet.update_cell(row_index, 8, count)
     chauffeurs_sheet.update_cell(row_index, 10, trajets_comptes)
-
     if count == 10:
         prix_int = to_int(prix)
         commission = round(prix_int * 0.03)
@@ -145,7 +141,7 @@ def incrementer_courses(chauffeurs_sheet, row_index, prix, trajet_id):
 def enregistrer_course(courses_sheet, passager, chauffeur_numero, trajet, code, row_index, prix, trajet_id):
     date = datetime.now().strftime("%Y-%m-%d %H:%M")
     commission = round(to_int(prix) * 0.03)
-    courses_sheet.append_row([date, str(passager), str(chauffeur_numero), str(trajet), "reservee", str(code), "non", to_int(row_index), commission, str(trajet_id)])
+    courses_sheet.append_row([date, str(passager), str(chauffeur_numero), str(trajet), "reservee", str(code), "non", to_int(row_index), commission, str(trajet_id), ""])
 
 def valider_code(courses_sheet, chauffeurs_sheet, code, chauffeur_numero):
     records = courses_sheet.get_all_records(expected_headers=HEADERS_COURSES)
@@ -166,11 +162,21 @@ def valider_code(courses_sheet, chauffeurs_sheet, code, chauffeur_numero):
             return True, row
     return False, None
 
-def annuler_trajet(courses_sheet, chauffeurs_sheet, chauffeur_numero):
+def terminer_trajet(courses_sheet, chauffeurs_sheet, chauffeur_numero):
+    records = courses_sheet.get_all_records(expected_headers=HEADERS_COURSES)
+    for i, row in enumerate(records):
+        if str(row["chauffeur"]) == str(chauffeur_numero) and str(row["statut"]) == "reservee":
+            courses_sheet.update_cell(i+2, 5, "annulee")
+            send_message(str(row["passager"]),
+                f"ℹ️ *Trajet terminé*\n\n"
+                f"Le chauffeur a terminé le trajet *{row['trajet']}*.\n"
+                f"Votre réservation non validée a été annulée.\n"
+                f"Tapez *menu* pour trouver un autre chauffeur."
+            )
+
+def annuler_trajet(courses_sheet, chauffeurs_sheet, chauffeur_numero, raison):
     records = courses_sheet.get_all_records(expected_headers=HEADERS_COURSES)
     chauffeur_records = chauffeurs_sheet.get_all_records(expected_headers=HEADERS_CHAUFFEURS)
-    
-    # Trouver row_index du chauffeur
     row_index_chauffeur = None
     annulations = 0
     for i, c in enumerate(chauffeur_records):
@@ -178,24 +184,19 @@ def annuler_trajet(courses_sheet, chauffeurs_sheet, chauffeur_numero):
             row_index_chauffeur = i + 2
             annulations = to_int(c.get("annulations", 0)) + 1
             break
-    
-    # Annuler toutes les réservations non validées
     for i, row in enumerate(records):
         if str(row["chauffeur"]) == str(chauffeur_numero) and str(row["statut"]) == "reservee":
             courses_sheet.update_cell(i+2, 5, "annulee")
-            # Prévenir le passager
+            courses_sheet.update_cell(i+2, 11, raison)
             send_message(str(row["passager"]),
                 f"⚠️ *Trajet annulé*\n\n"
                 f"Le chauffeur a annulé le trajet *{row['trajet']}*.\n"
+                f"Raison : {raison}\n"
                 f"Tapez *menu* pour trouver un autre chauffeur."
             )
-    
-    # Remettre disponible et incrémenter annulations
     if row_index_chauffeur:
         chauffeurs_sheet.update_cell(row_index_chauffeur, 5, "non")
         chauffeurs_sheet.update_cell(row_index_chauffeur, 11, annulations)
-        
-        # Avertissement si trop d'annulations
         if annulations >= 3:
             send_message(str(chauffeur_numero),
                 f"⚠️ *Attention*\n\n"
@@ -247,17 +248,45 @@ def webhook():
         heure_sess = sess["heure"]
         lieu_sess = sess["lieu"]
         places_sess = sess["places"]
+        annulation_en_cours = sess["annulation_en_cours"]
 
         print(f"SESSION: etat={etat}")
 
-        if text == "menu":
-            sauvegarder_session(sessions_sheet, numero, "attente_role")
+        # Chauffeur en cours d'annulation — attend la raison
+        if annulation_en_cours == "oui":
+            raisons = {
+                "1": "Panne mécanique",
+                "2": "Urgence personnelle",
+                "3": "Pas assez de passagers",
+            }
+            if text in ["1", "2", "3"]:
+                raison = raisons[text]
+            else:
+                raison = text
+            annuler_trajet(courses_sheet, chauffeurs_sheet, numero, raison)
+            sauvegarder_session(sessions_sheet, numero, "attente_role", annulation_en_cours="")
             send_message(numero,
-                "🚗 *Bienvenue sur GoShare Conakry !*\n\n"
-                "Vous êtes :\n"
-                "1️⃣ Tapez *chauffeur*\n"
-                "2️⃣ Tapez *passager*"
+                f"✅ Trajet annulé.\n"
+                f"Raison : *{raison}*\n"
+                f"Les passagers ont été prévenus.\n"
+                f"Tapez *menu* pour créer un nouveau trajet."
             )
+
+        elif text == "menu":
+            if etat == "chauffeur_pret":
+                send_message(numero,
+                    "⚠️ Vous avez un trajet en cours.\n\n"
+                    "Tapez *terminer* pour clôturer le trajet.\n"
+                    "Tapez *annuler* pour annuler le trajet."
+                )
+            else:
+                sauvegarder_session(sessions_sheet, numero, "attente_role")
+                send_message(numero,
+                    "🚗 *Bienvenue sur GoShare Conakry !*\n\n"
+                    "Vous êtes :\n"
+                    "1️⃣ Tapez *chauffeur*\n"
+                    "2️⃣ Tapez *passager*"
+                )
 
         elif text.startswith("valider "):
             code = text.replace("valider ", "").strip().upper()
@@ -276,17 +305,27 @@ def webhook():
             else:
                 send_message(numero, "❌ Code invalide ou déjà validé.")
 
+        elif text == "terminer":
+            terminer_trajet(courses_sheet, chauffeurs_sheet, numero)
+            sauvegarder_session(sessions_sheet, numero, "attente_role")
+            send_message(numero,
+                "✅ Trajet terminé !\n"
+                "Tapez *menu* pour créer un nouveau trajet."
+            )
+
+        elif text == "annuler":
+            send_message(numero,
+                "❓ *Raison de l'annulation ?*\n\n"
+                "1️⃣ Panne mécanique\n"
+                "2️⃣ Urgence personnelle\n"
+                "3️⃣ Pas assez de passagers\n"
+                "4️⃣ Autre — tapez votre raison"
+            )
+            sauvegarder_session(sessions_sheet, numero, etat, trajet=trajet_sess, heure=heure_sess, lieu=lieu_sess, places=places_sess, annulation_en_cours="oui")
+
         elif text == "liberer":
             remettre_place_si_non_validee(courses_sheet, chauffeurs_sheet, numero)
             send_message(numero, "✅ Places remises en disponibilité.\nTapez *menu* pour modifier.")
-
-        elif text == "annuler":
-            annuler_trajet(courses_sheet, chauffeurs_sheet, numero)
-            send_message(numero,
-                "✅ Trajet annulé.\n"
-                "Les passagers ont été prévenus.\n"
-                "Tapez *menu* pour créer un nouveau trajet."
-            )
 
         elif etat in ["debut", "attente_role"] and text == "chauffeur":
             sauvegarder_session(sessions_sheet, numero, "chauffeur_trajet")
@@ -365,6 +404,7 @@ def webhook():
                     "Commandes :\n"
                     "▪️ *valider GS-XXXX* pour valider un code passager\n"
                     "▪️ *liberer* pour remettre les places non validées\n"
+                    "▪️ *terminer* pour clôturer le trajet\n"
                     "▪️ *annuler* pour annuler le trajet\n"
                     "▪️ *menu* pour modifier"
                 )
