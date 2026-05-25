@@ -19,7 +19,7 @@ def get_sheets():
     creds = Credentials.from_service_account_file("/etc/secrets/credentials.json", scopes=scopes)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SHEET_ID)
-    return sheet.worksheet("Chauffeurs"), sheet.worksheet("Courses")
+    return sheet.worksheet("chauffeurs"), sheet.worksheet("courses")
 
 def send_message(to, message):
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
