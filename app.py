@@ -2,6 +2,7 @@ from flask import Flask, request
 import requests
 import os
 import gspread
+import re
 from google.oauth2.service_account import Credentials
 from datetime import datetime
 import random
@@ -40,8 +41,7 @@ def send_message(to, message):
     print(f"Send: {r.status_code}")
 
 def nettoyer_nombre(text):
-    import re
-    return re.sub(r'[^\d]', '', text)
+    return re.sub(r'[^\d]', '', str(text))
 
 def generer_code():
     return "GS-" + "".join(random.choices(string.digits, k=4))
@@ -52,9 +52,9 @@ def ajouter_chauffeur(numero, trajet, heure, lieu, places, prix):
     for i, row in enumerate(records):
         if str(row["numero"]) == str(numero):
             count = int(row.get("courses_count", 0))
-            chauffeurs_sheet.update(f"A{i+2}:H{i+2}", [[numero, trajet, heure, lieu, "oui", places, prix, count]])
+            chauffeurs_sheet.update(f"A{i+2}:H{i+2}", [[str(numero), str(trajet), str(heure), str(lieu), "oui", int(places), int(prix), count]])
             return
-    chauffeurs_sheet.append_row([numero, trajet, heure, lieu, "oui", places, prix, 0])
+    chauffeurs_sheet.append_row([str(numero), str(trajet), str(heure), str(lieu), "oui", int(places), int(prix), 0])
 
 def trouver_chauffeurs(trajet_passager):
     chauffeurs_sheet, _ = get_sheets()
@@ -114,7 +114,7 @@ def enregistrer_course(passager, chauffeur_numero, trajet, code, row_index, prix
     _, courses_sheet = get_sheets()
     date = datetime.now().strftime("%Y-%m-%d %H:%M")
     commission = round(int(prix) * 0.03)
-    courses_sheet.append_row([date, passager, chauffeur_numero, trajet, "reservee", code, "non", row_index, commission])
+    courses_sheet.append_row([date, str(passager), str(chauffeur_numero), str(trajet), "reservee", str(code), "non", int(row_index), int(commission)])
 
 def valider_code(code, chauffeur_numero):
     _, courses_sheet = get_sheets()
@@ -173,7 +173,6 @@ def webhook():
         text = text_original.lower().strip()
         etat = sessions.get(numero, "debut")
 
-        # DEBUG
         print(f"RECU: '{text}' | etat: {etat} | repr: {repr(text)}")
 
         if text == "menu":
@@ -252,13 +251,14 @@ def webhook():
         elif etat == "chauffeur_prix":
             nombre = nettoyer_nombre(text)
             print(f"PRIX nettoyé: '{nombre}'")
-            if nombre:
+            trajet = sessions.get(numero + "_trajet", "")
+            heure = sessions.get(numero + "_heure", "")
+            lieu = sessions.get(numero + "_lieu", "")
+            places = sessions.get(numero + "_places", 0)
+            print(f"DEBUG: trajet={trajet} heure={heure} lieu={lieu} places={places}")
+            if nombre and str(trajet) and str(heure) and str(lieu) and int(places) > 0:
                 prix = int(nombre)
-                trajet = sessions.get(numero + "_trajet", "")
-                heure = sessions.get(numero + "_heure", "")
-                lieu = sessions.get(numero + "_lieu", "")
-                places = sessions.get(numero + "_places", 0)
-                ajouter_chauffeur(numero, trajet, heure, lieu, places, prix)
+                ajouter_chauffeur(numero, trajet, heure, lieu, int(places), prix)
                 sessions[numero] = "chauffeur_pret"
                 send_message(numero,
                     f"✅ *Vous êtes enregistré !*\n\n"
@@ -274,7 +274,9 @@ def webhook():
                     "▪️ *menu* pour modifier"
                 )
             else:
-                send_message(numero, "❌ Tapez un montant en chiffres. Exemple : *15000*")
+                send_message(numero,
+                    "❌ Une information manque. Tapez *menu* pour recommencer."
+                )
 
         elif etat == "chauffeur_pret":
             if text.startswith("valider "):
