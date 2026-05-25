@@ -16,27 +16,17 @@ PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID")
 SHEET_ID = os.environ.get("GOOGLE_SHEET_ID")
 VERIFY_TOKEN = "goshare123"
 
-sessions = {}
-
 def get_sheets():
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
     creds = Credentials.from_service_account_file("/etc/secrets/credentials.json", scopes=scopes)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SHEET_ID)
-    return sheet.worksheet("chauffeurs"), sheet.worksheet("courses")
+    return sheet.worksheet("chauffeurs"), sheet.worksheet("courses"), sheet.worksheet("sessions")
 
 def send_message(to, message):
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
-    headers = {
-        "Authorization": f"Bearer {TOKEN}",
-        "Content-Type": "application/json"
-    }
-    data = {
-        "messaging_product": "whatsapp",
-        "to": to,
-        "type": "text",
-        "text": {"body": message}
-    }
+    headers = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
+    data = {"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": message}}
     r = requests.post(url, headers=headers, json=data)
     print(f"Send: {r.status_code}")
 
@@ -46,45 +36,36 @@ def nettoyer_nombre(text):
 def generer_code():
     return "GS-" + "".join(random.choices(string.digits, k=4))
 
-def sauvegarder_session(numero, etat, trajet="", heure="", lieu="", places="", prix=""):
-    try:
-        _, _ = get_sheets()
-        chauffeurs_sheet, _ = get_sheets()
-        sheet = chauffeurs_sheet.spreadsheet.worksheet("sessions")
-        records = sheet.get_all_records()
-        data = [str(numero), str(etat), str(trajet), str(heure), str(lieu), str(places), str(prix)]
-        for i, row in enumerate(records):
-            if str(row["numero"]) == str(numero):
-                sheet.update(f"A{i+2}:G{i+2}", [data])
-                return
-        sheet.append_row(data)
-    except Exception as e:
-        print(f"Erreur session save: {e}")
-
 def lire_session(numero):
-    try:
-        chauffeurs_sheet, _ = get_sheets()
-        sheet = chauffeurs_sheet.spreadsheet.worksheet("sessions")
-        records = sheet.get_all_records()
-        for row in records:
-            if str(row["numero"]) == str(numero):
-                return {
-                    "etat": str(row.get("etat", "debut")),
-                    "trajet": str(row.get("trajet", "")),
-                    "heure": str(row.get("heure", "")),
-                    "lieu": str(row.get("lieu", "")),
-                    "places": str(row.get("places", "")),
-                    "prix": str(row.get("prix", ""))
-                }
-    except Exception as e:
-        print(f"Erreur session read: {e}")
+    _, _, sessions_sheet = get_sheets()
+    records = sessions_sheet.get_all_records()
+    for row in records:
+        if str(row["numero"]) == str(numero):
+            return {
+                "etat": str(row.get("etat", "debut")),
+                "trajet": str(row.get("trajet", "")),
+                "heure": str(row.get("heure", "")),
+                "lieu": str(row.get("lieu", "")),
+                "places": str(row.get("places", "")),
+                "prix": str(row.get("prix", ""))
+            }
     return {"etat": "debut", "trajet": "", "heure": "", "lieu": "", "places": "", "prix": ""}
 
+def sauvegarder_session(numero, etat, trajet="", heure="", lieu="", places="", prix=""):
+    _, _, sessions_sheet = get_sheets()
+    records = sessions_sheet.get_all_records()
+    data = [str(numero), str(etat), str(trajet), str(heure), str(lieu), str(places), str(prix)]
+    for i, row in enumerate(records):
+        if str(row["numero"]) == str(numero):
+            sessions_sheet.update(f"A{i+2}:G{i+2}", [data])
+            return
+    sessions_sheet.append_row(data)
+
 def ajouter_chauffeur(numero, trajet, heure, lieu, places, prix):
-    chauffeurs_sheet, _ = get_sheets()
+    chauffeurs_sheet, _, _ = get_sheets()
     records = chauffeurs_sheet.get_all_records()
-    places_int = int(places) if str(places).isdigit() else 0
-    prix_int = int(prix) if str(prix).isdigit() else 0
+    places_int = int(nettoyer_nombre(str(places))) if nettoyer_nombre(str(places)) else 0
+    prix_int = int(nettoyer_nombre(str(prix))) if nettoyer_nombre(str(prix)) else 0
     for i, row in enumerate(records):
         if str(row["numero"]) == str(numero):
             count = int(row.get("courses_count", 0))
@@ -93,7 +74,7 @@ def ajouter_chauffeur(numero, trajet, heure, lieu, places, prix):
     chauffeurs_sheet.append_row([str(numero), str(trajet), str(heure), str(lieu), "oui", places_int, prix_int, 0])
 
 def trouver_chauffeurs(trajet_passager):
-    chauffeurs_sheet, _ = get_sheets()
+    chauffeurs_sheet, _, _ = get_sheets()
     records = chauffeurs_sheet.get_all_records()
     resultats = []
     for i, row in enumerate(records):
@@ -105,7 +86,7 @@ def trouver_chauffeurs(trajet_passager):
     return resultats
 
 def decrementer_place(row_index):
-    chauffeurs_sheet, _ = get_sheets()
+    chauffeurs_sheet, _, _ = get_sheets()
     records = chauffeurs_sheet.get_all_records()
     row = records[row_index - 2]
     places = int(row.get("places", 0)) - 1
@@ -114,7 +95,7 @@ def decrementer_place(row_index):
         chauffeurs_sheet.update_cell(row_index, 5, "non")
 
 def incrementer_place(row_index):
-    chauffeurs_sheet, _ = get_sheets()
+    chauffeurs_sheet, _, _ = get_sheets()
     records = chauffeurs_sheet.get_all_records()
     row = records[row_index - 2]
     places = int(row.get("places", 0)) + 1
@@ -122,41 +103,38 @@ def incrementer_place(row_index):
     chauffeurs_sheet.update_cell(row_index, 5, "oui")
 
 def incrementer_courses(row_index, prix):
-    chauffeurs_sheet, _ = get_sheets()
+    chauffeurs_sheet, _, _ = get_sheets()
     records = chauffeurs_sheet.get_all_records()
     row = records[row_index - 2]
     count = int(row.get("courses_count", 0)) + 1
     chauffeurs_sheet.update_cell(row_index, 8, count)
     if count == 10:
-        prix_int = int(str(prix)) if str(prix).isdigit() else 0
+        prix_int = int(nettoyer_nombre(str(prix))) if nettoyer_nombre(str(prix)) else 0
         commission = round(prix_int * 0.03)
         send_message(str(row["numero"]),
             f"🌟 *Félicitations et merci pour votre confiance !*\n\n"
             f"Vous venez de compléter votre *10ème course* sur GoShare Conakry.\n\n"
             f"GoShare vous a permis de trouver des passagers facilement, "
             f"de remplir votre véhicule et de maximiser vos revenus — tout ça gratuitement.\n\n"
-            f"Pour continuer à vous offrir ce service, à l'améliorer et à le maintenir "
-            f"disponible pour vous et vos passagers, nous vous invitons à contribuer "
+            f"Pour continuer à vous offrir ce service, nous vous invitons à contribuer "
             f"à la pérennité de GoShare.\n\n"
             f"À partir de maintenant, une commission de seulement *3%* par trajet "
             f"nous aidera à continuer cette mission ensemble.\n\n"
-            f"Sur un trajet à *{prix_int:,} GNF*, cela représente *{commission:,} GNF* — "
-            f"une contribution minime pour un service qui vous rapporte bien plus.\n\n"
+            f"Sur un trajet à *{prix_int:,} GNF*, cela représente *{commission:,} GNF*.\n\n"
             f"Merci de faire partie de l'aventure GoShare 🚗\n"
             f"*L'équipe GoShare Conakry*"
         )
-    return count
 
 def enregistrer_course(passager, chauffeur_numero, trajet, code, row_index, prix):
-    _, courses_sheet = get_sheets()
+    _, courses_sheet, _ = get_sheets()
     date = datetime.now().strftime("%Y-%m-%d %H:%M")
-    prix_int = int(str(prix)) if str(prix).isdigit() else 0
+    prix_int = int(nettoyer_nombre(str(prix))) if nettoyer_nombre(str(prix)) else 0
     commission = round(prix_int * 0.03)
     courses_sheet.append_row([date, str(passager), str(chauffeur_numero), str(trajet), "reservee", str(code), "non", int(row_index), commission])
 
 def valider_code(code, chauffeur_numero):
-    _, courses_sheet = get_sheets()
-    chauffeurs_sheet, _ = get_sheets()
+    _, courses_sheet, _ = get_sheets()
+    chauffeurs_sheet, _, _ = get_sheets()
     records = courses_sheet.get_all_records()
     chauffeur_records = chauffeurs_sheet.get_all_records()
     for i, row in enumerate(records):
@@ -175,7 +153,7 @@ def valider_code(code, chauffeur_numero):
     return False, None
 
 def remettre_place_si_non_validee(chauffeur_numero):
-    _, courses_sheet = get_sheets()
+    _, courses_sheet, _ = get_sheets()
     records = courses_sheet.get_all_records()
     for i, row in enumerate(records):
         if str(row["chauffeur"]) == str(chauffeur_numero) and str(row["validee"]) == "non" and str(row["statut"]) == "reservee":
@@ -207,27 +185,28 @@ def webhook():
             return "OK", 200
 
         numero = message["from"]
-        text_original = message["text"]["body"].strip()
-        text = text_original.lower().strip()
+        text = message["text"]["body"].strip().lower()
+        print(f"RECU: '{text}'")
 
-        print(f"RECU: '{text}' | repr: {repr(text)}")
-
-        # Lire session depuis Google Sheets
         sess = lire_session(numero)
         etat = sess["etat"]
         trajet_sess = sess["trajet"]
         heure_sess = sess["heure"]
         lieu_sess = sess["lieu"]
         places_sess = sess["places"]
-        prix_sess = sess["prix"]
-
-        print(f"SESSION: etat={etat} trajet={trajet_sess} heure={heure_sess} lieu={lieu_sess} places={places_sess} prix={prix_sess}")
+        print(f"SESSION: etat={etat}")
 
         if text == "menu":
             sauvegarder_session(numero, "debut")
-            etat = "debut"
+            send_message(numero,
+                "🚗 *Bienvenue sur GoShare Conakry !*\n\n"
+                "Vous êtes :\n"
+                "1️⃣ Tapez *chauffeur*\n"
+                "2️⃣ Tapez *passager*"
+            )
+            sauvegarder_session(numero, "attente_role")
 
-        if etat == "debut":
+        elif etat == "debut":
             send_message(numero,
                 "🚗 *Bienvenue sur GoShare Conakry !*\n\n"
                 "Vous êtes :\n"
@@ -280,7 +259,6 @@ def webhook():
 
         elif etat == "chauffeur_places":
             nombre = nettoyer_nombre(text)
-            print(f"PLACES nettoyé: '{nombre}'")
             if nombre:
                 send_message(numero,
                     f"💺 Places : *{nombre}*\n\n"
@@ -293,16 +271,21 @@ def webhook():
 
         elif etat == "chauffeur_prix":
             nombre = nettoyer_nombre(text)
-            print(f"PRIX nettoyé: '{nombre}' | places_sess='{places_sess}' | trajet='{trajet_sess}'")
-            if nombre and trajet_sess and heure_sess and lieu_sess and places_sess:
-                ajouter_chauffeur(numero, trajet_sess, heure_sess, lieu_sess, places_sess, nombre)
-                sauvegarder_session(numero, "chauffeur_pret", trajet=trajet_sess, heure=heure_sess, lieu=lieu_sess, places=places_sess, prix=nombre)
+            sess2 = lire_session(numero)
+            trajet_f = sess2["trajet"]
+            heure_f = sess2["heure"]
+            lieu_f = sess2["lieu"]
+            places_f = sess2["places"]
+            print(f"PRIX: nombre={nombre} trajet={trajet_f} heure={heure_f} lieu={lieu_f} places={places_f}")
+            if nombre and trajet_f and heure_f and lieu_f and places_f:
+                ajouter_chauffeur(numero, trajet_f, heure_f, lieu_f, places_f, nombre)
+                sauvegarder_session(numero, "chauffeur_pret", trajet=trajet_f, heure=heure_f, lieu=lieu_f, places=places_f, prix=nombre)
                 send_message(numero,
                     f"✅ *Vous êtes enregistré !*\n\n"
-                    f"📍 Trajet : *{trajet_sess}*\n"
-                    f"⏰ Départ : *{heure_sess}*\n"
-                    f"📌 Lieu : *{lieu_sess}*\n"
-                    f"💺 Places : *{places_sess}*\n"
+                    f"📍 Trajet : *{trajet_f}*\n"
+                    f"⏰ Départ : *{heure_f}*\n"
+                    f"📌 Lieu : *{lieu_f}*\n"
+                    f"💺 Places : *{places_f}*\n"
                     f"💰 Prix : *{int(nombre):,} GNF*\n\n"
                     "En attente de passagers... 🚗\n\n"
                     "Commandes :\n"
@@ -332,21 +315,17 @@ def webhook():
                     send_message(numero, "❌ Code invalide ou déjà validé.")
             elif text == "liberer":
                 remettre_place_si_non_validee(numero)
-                send_message(numero,
-                    "✅ Places non validées remises en disponibilité.\n"
-                    "Tapez *menu* pour modifier votre trajet."
-                )
+                send_message(numero, "✅ Places remises en disponibilité.\nTapez *menu* pour modifier.")
             else:
                 send_message(numero,
-                    "Commandes disponibles :\n"
+                    "Commandes :\n"
                     "▪️ *valider GS-XXXX* pour valider un code\n"
                     "▪️ *liberer* pour remettre les places\n"
                     "▪️ *menu* pour modifier"
                 )
 
         elif etat == "passager_trajet":
-            trajet = text
-            resultats = trouver_chauffeurs(trajet)
+            resultats = trouver_chauffeurs(text)
             if resultats:
                 msg = f"🚗 *{len(resultats)} chauffeur(s) disponible(s) :*\n\n"
                 for idx, (row_index, chauffeur, score) in enumerate(resultats):
@@ -357,28 +336,26 @@ def webhook():
                     )
                 msg += "Tapez le *numéro* de votre choix."
                 send_message(numero, msg)
-                sauvegarder_session(numero, "passager_choix", trajet=trajet)
-                sessions[numero + "_resultats"] = resultats
+                sauvegarder_session(numero, "passager_choix", trajet=text)
             else:
                 send_message(numero,
-                    f"⏳ Aucun chauffeur disponible pour *{trajet}*.\n\n"
+                    f"⏳ Aucun chauffeur disponible.\n\n"
                     "Réessayez dans quelques minutes.\n"
                     "Tapez *menu* pour recommencer."
                 )
                 sauvegarder_session(numero, "debut")
 
         elif etat == "passager_choix":
-            resultats = sessions.get(numero + "_resultats", [])
-            trajet = trajet_sess
             nombre = nettoyer_nombre(text)
-            if nombre and resultats:
+            if nombre:
+                resultats = trouver_chauffeurs(trajet_sess)
                 choix = int(nombre) - 1
                 if 0 <= choix < len(resultats):
                     row_index, chauffeur, _ = resultats[choix]
                     code = generer_code()
                     prix = int(chauffeur.get("prix", 0))
                     decrementer_place(row_index)
-                    enregistrer_course(numero, chauffeur["numero"], trajet, code, row_index, prix)
+                    enregistrer_course(numero, chauffeur["numero"], trajet_sess, code, row_index, prix)
                     send_message(numero,
                         f"✅ *Place réservée !*\n\n"
                         f"📍 Trajet : *{chauffeur['trajet']}*\n"
@@ -391,7 +368,7 @@ def webhook():
                     )
                     send_message(str(chauffeur["numero"]),
                         f"🎉 *Nouveau passager !*\n\n"
-                        f"📍 Trajet : *{trajet}*\n"
+                        f"📍 Trajet : *{trajet_sess}*\n"
                         f"💰 Prix : *{prix:,} GNF*\n"
                         f"💺 Places restantes : *{int(chauffeur['places'])-1}*\n\n"
                         "Tapez *valider GS-XXXX* quand le passager vous donne son code."
@@ -400,10 +377,7 @@ def webhook():
                 else:
                     send_message(numero, "❌ Numéro invalide.")
             else:
-                send_message(numero,
-                    "❌ Tapez *menu* et recommencez — liste expirée."
-                )
-                sauvegarder_session(numero, "debut")
+                send_message(numero, "❌ Tapez le numéro. Exemple : *1*")
 
     except Exception as e:
         print(f"Erreur: {e}")
