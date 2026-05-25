@@ -40,8 +40,8 @@ def send_message(to, message):
     print(f"Send: {r.status_code}")
 
 def nettoyer_nombre(text):
-    # Enlever tous les espaces, espaces insécables, virgules
-    return text.strip().replace(" ", "").replace("\u202f", "").replace(",", "").replace(".", "").replace("fg", "").replace("gnf", "").replace("gf", "")
+    import re
+    return re.sub(r'[^\d]', '', text)
 
 def generer_code():
     return "GS-" + "".join(random.choices(string.digits, k=4))
@@ -173,6 +173,9 @@ def webhook():
         text = text_original.lower().strip()
         etat = sessions.get(numero, "debut")
 
+        # DEBUG
+        print(f"RECU: '{text}' | etat: {etat} | repr: {repr(text)}")
+
         if text == "menu":
             sessions[numero] = "debut"
             etat = "debut"
@@ -232,8 +235,10 @@ def webhook():
             )
 
         elif etat == "chauffeur_places":
-            try:
-                places = int(nettoyer_nombre(text))
+            nombre = nettoyer_nombre(text)
+            print(f"PLACES nettoyé: '{nombre}'")
+            if nombre:
+                places = int(nombre)
                 sessions[numero + "_places"] = places
                 sessions[numero] = "chauffeur_prix"
                 send_message(numero,
@@ -241,12 +246,14 @@ def webhook():
                     "💰 Prix par place en GNF ?\n"
                     "Exemple : *15000*"
                 )
-            except:
+            else:
                 send_message(numero, "❌ Tapez un nombre. Exemple : *4*")
 
         elif etat == "chauffeur_prix":
-            try:
-                prix = int(nettoyer_nombre(text))
+            nombre = nettoyer_nombre(text)
+            print(f"PRIX nettoyé: '{nombre}'")
+            if nombre:
+                prix = int(nombre)
                 trajet = sessions.get(numero + "_trajet", "")
                 heure = sessions.get(numero + "_heure", "")
                 lieu = sessions.get(numero + "_lieu", "")
@@ -266,8 +273,8 @@ def webhook():
                     "▪️ *liberer* pour remettre les places non validées\n"
                     "▪️ *menu* pour modifier"
                 )
-            except:
-                send_message(numero, "❌ Tapez un montant en chiffres uniquement. Exemple : *15000*")
+            else:
+                send_message(numero, "❌ Tapez un montant en chiffres. Exemple : *15000*")
 
         elif etat == "chauffeur_pret":
             if text.startswith("valider "):
@@ -327,8 +334,9 @@ def webhook():
         elif etat == "passager_choix":
             resultats = sessions.get(numero + "_resultats", [])
             trajet = sessions.get(numero + "_trajet", "")
-            try:
-                choix = int(nettoyer_nombre(text)) - 1
+            nombre = nettoyer_nombre(text)
+            if nombre:
+                choix = int(nombre) - 1
                 if 0 <= choix < len(resultats):
                     row_index, chauffeur, _ = resultats[choix]
                     code = generer_code()
@@ -355,7 +363,7 @@ def webhook():
                     sessions[numero] = "debut"
                 else:
                     send_message(numero, "❌ Numéro invalide.")
-            except:
+            else:
                 send_message(numero, "❌ Tapez juste le numéro. Exemple : *1*")
 
     except Exception as e:
